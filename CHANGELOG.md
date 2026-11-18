@@ -2,6 +2,19 @@
 
 ## 0.1.0
 
+Red-team fix batch (before first publish, version unchanged):
+
+- Fix: stdin is read as bytes and decoded as UTF-8, so non-ASCII project or transcript paths no longer silence the guard on Windows; hooks run `python3 -X utf8` then `python -X utf8`.
+- Security: `block_enabled` is honoured only from `CTXGUARD_BLOCK=1` or the user file `~/.claude/ctxguard.json`, never from a project file. Thresholds have floors (soft/strong >= 20000, block >= 100000, ages >= 0.5 h) with strict ordering; also applied to env values.
+- Fix: block message no longer prints "limit 0k".
+- Fix: when no usage record is in the last 400 KB, the transcript is read backwards (doubling window) up to 8 MB.
+- Age: age alone never gives the strong level while context < 30k tokens (resumed/compacted sessions keep their original age; documented limitation).
+- Project dir is `CLAUDE_PROJECT_DIR` first, then the payload cwd.
+- The override file expires after 12 hours (mtime); `PostToolUse` is throttled at block level too.
+- Python older than 3.6 exits silently.
+
+Original 0.1.0 contents:
+
 - First release. Generalised from a private single-project hook.
 - Hooks: `UserPromptSubmit` and `PostToolUse` run `scripts/ctxguard.py` (stdlib only, no model, no network; any error prints nothing and exits 0).
 - Soft (150k tokens / 6 h) and strong (250k / 9 h) reminders with generic wording.
