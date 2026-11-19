@@ -1,6 +1,6 @@
 {
   "name": "ctxguard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Context guard for Claude Code: a stdlib-only hook that measures the current context size and session age from the transcript and nudges you to hand over to a fresh session before long sessions drain your usage limits. No model, no network. Optional per-project thresholds and an opt-in hard block.",
   "license": "MIT",
   "homepage": "https://github.com/msamkari/ctxguard",

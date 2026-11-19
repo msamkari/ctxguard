@@ -41,8 +41,8 @@ Two optional files, same keys (all optional): the user file `~/.claude/ctxguard.
 }
 ```
 
-- Values must be positive numbers (booleans and strings are rejected). Floors: soft and strong >= 20000, block >= 100000, ages >= 0.5 h. Order must be strictly soft < strong < block and age_soft_h < age_strong_h. A file (layer) that breaks any rule is ignored whole.
-- **Blocking is opt-in and only the user can enable it**: set the environment variable `CTXGUARD_BLOCK=1`, or `"block_enabled": true` in the USER file `~/.claude/ctxguard.json`. `block_enabled` in a project file is ignored, so a cloned repo can never lock your sessions.
+- Values must be positive numbers (booleans and strings are rejected). Floors: soft and strong >= 20000, block >= 100000, ages >= 0.5 h. Order must be strictly soft < strong < block and age_soft_h < age_strong_h. A single bad field (wrong type, non-positive) is skipped on its own and the rest of the file still applies; a file whose merged thresholds break the order/floors is ignored whole. Whenever something is ignored, the first reminder of the session says `ctxguard config invalid: <reason>; using defaults for the rest.` (a missing file is silent). Python older than 3.6 exits silently, so the guard does nothing there.
+- **Blocking is opt-in and only the user can enable it**: set the environment variable `CTXGUARD_BLOCK=1`, or `"block_enabled": true` in the USER file `~/.claude/ctxguard.json`. `block_enabled` in a project file is ignored (and reported in that first reminder), so a cloned repo can never lock your sessions.
 - The project directory is `CLAUDE_PROJECT_DIR` when set, otherwise the hook's current directory.
 - To continue in a blocked session anyway, create an empty file `.claude/ctxguard.override` in the project. It is honoured for 12 hours (by modification time), then ignored.
 - Age limits: the session age is measured from the first line of the transcript, so a resumed or compacted session keeps its original age. To limit the damage, age alone never triggers the strong level while the context is under 30k tokens.

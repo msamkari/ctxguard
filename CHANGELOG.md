@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+- Fix: a bad config field (wrong type, non-positive number) is now skipped on its own instead of discarding the whole file; the remaining valid fields still apply.
+- New: the first reminder of a session reports what was ignored: `ctxguard config invalid: <reason>; using defaults for the rest.` (unreadable/non-object file, bad field, out-of-order thresholds, bad `CONTEXT_GUARD_*` env value, `block_enabled` in a project file). Missing files stay silent.
+- Docs: Python older than 3.6 exits silently (guard inactive); documented in both READMEs.
+- No change to permissions, hooks, license or name.
+
 ## 0.1.0
 
 Red-team fix batch (before first publish, version unchanged):

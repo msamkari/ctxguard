@@ -420,7 +420,7 @@ class TestPackage(unittest.TestCase):
     def test_manifest(self):
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
             m = json.load(fh)
-        self.assertEqual((m["name"], m["version"], m["license"]), ("ctxguard", "0.1.0", "MIT"))
+        self.assertEqual((m["name"], m["version"], m["license"]), ("ctxguard", "0.1.1", "MIT"))
         self.assertEqual(m["author"]["name"], "msamkari")
         self.assertEqual(m["homepage"], "https://github.com/msamkari/ctxguard")
 
@@ -468,6 +468,58 @@ class TestPackage(unittest.TestCase):
             src = fh.read()
         for mod in ("socket", "urllib", "http", "requests", "subprocess"):
             self.assertIsNone(re.search(r"^\s*(import|from)\s+%s\b" % mod, src, re.M), mod)
+
+
+class TestConfigWarnings(Base):
+    def test_bad_field_skipped_alone(self):
+        self.config({"soft": "abc", "strong": 300000})
+        msg = self.ctx(self.run_hook(self.transcript(160000)))
+        self.assertIn("SOFT RULE", msg)  # default soft 150k still applies
+        self.assertIn("ctxguard config invalid", msg)
+        self.assertIn("'soft'", msg)
+        self.assertEqual(self.run_hook(self.transcript(260000, name="b.jsonl"), sid="s2").count("STRONG RULE"), 0)
+
+    def test_valid_field_survives_bad_sibling(self):
+        self.config({"soft": 50000, "strong": "x"})
+        self.assertIn("SOFT RULE", self.ctx(self.run_hook(self.transcript(60000))))
+
+    def test_invalid_json_warns(self):
+        self.config(None, raw="{nope")
+        msg = self.ctx(self.run_hook(self.transcript(160000)))
+        self.assertIn("not valid JSON", msg)
+        self.assertIn("using defaults", msg)
+
+    def test_not_object_warns(self):
+        self.config(None, raw="[1,2]")
+        self.assertIn("not a JSON object", self.ctx(self.run_hook(self.transcript(160000))))
+
+    def test_project_block_enabled_warns_and_ignored(self):
+        self.config({"block_enabled": True})
+        out = self.run_hook(self.transcript(520000))
+        self.assertNotIn('"block"', out)
+        self.assertIn("block_enabled is ignored in a project file", self.ctx(out))
+
+    def test_order_violation_warns(self):
+        self.config({"soft": 400000})
+        self.assertIn("out of range or order", self.ctx(self.run_hook(self.transcript(160000))))
+
+    def test_warning_only_first_reminder(self):
+        self.config({"soft": "abc"})
+        t = self.transcript(160000)
+        self.assertIn("config invalid", self.ctx(self.run_hook(t)))
+        self.assertNotIn("config invalid", self.ctx(self.run_hook(t)))
+
+    def test_bad_env_warns(self):
+        msg = self.ctx(self.run_hook(self.transcript(160000), env={"CONTEXT_GUARD_SOFT": "abc"}))
+        self.assertIn("CONTEXT_GUARD_SOFT", msg)
+
+    def test_no_warning_when_clean_or_missing(self):
+        self.assertNotIn("config invalid", self.ctx(self.run_hook(self.transcript(160000))))
+
+    def test_warning_in_block_message(self):
+        self.config({"soft": "abc"})
+        out = self.run_hook(self.transcript(520000), env={"CTXGUARD_BLOCK": "1"})
+        self.assertIn("config invalid", json.loads(out)["reason"])
 
 
 if __name__ == "__main__":
