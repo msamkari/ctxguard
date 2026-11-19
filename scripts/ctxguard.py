@@ -21,11 +21,15 @@ Config files (all keys optional): ~/.claude/ctxguard.json (user) and
 strong, block (tokens), age_soft_h, age_strong_h (hours), block_enabled
 (user file only). Floors: soft>=20000, strong>=20000, block>=100000, ages
 >=0.5 h; strictly soft<strong<block and age_soft_h<age_strong_h. A layer
-that violates anything is ignored whole. Precedence: defaults < user file <
+whose merged thresholds violate the ordering/floors is ignored whole. Precedence: defaults < user file <
 project file < env.
 Env overrides: CONTEXT_GUARD_SOFT/STRONG/BLOCK (tokens),
 CONTEXT_GUARD_AGE_SOFT/AGE_STRONG (hours), same floors; invalid values are
 ignored. The project dir is CLAUDE_PROJECT_DIR, else the payload cwd.
+
+Bad config fields are skipped one by one; the first reminder of a session
+says "ctxguard config invalid: <reason>; using defaults". Python < 3.6 exits
+silently (no guard).
 
 Never fails the session: any error prints nothing and exits 0.
 """
@@ -87,36 +91,51 @@ def _ordered(c):
             and all(c[k] >= FLOORS[k] for k in FLOORS))
 
 
-def _read_layer(path, allow_block):
-    """Parse one config file. Return (partial dict, block flag) or None if invalid."""
+def _read_layer(path, allow_block, warns):
+    """Parse one config file. Return (partial dict, block flag) or None if unusable.
+
+    A bad field is skipped on its own (with a warning); a missing file is silent.
+    """
+    label = "~/.claude/ctxguard.json" if allow_block else ".claude/ctxguard.json"
     try:
-        if not os.path.isfile(path) or os.path.getsize(path) > 65536:
+        if not os.path.isfile(path):
+            return None
+        if os.path.getsize(path) > 65536:
+            warns.append("%s too large" % label)
             return None
         with open(path, "rb") as fh:
             raw = json.loads(fh.read().decode("utf-8-sig", "replace"))
-        if not isinstance(raw, dict):
-            return None
-        part = {}
-        for key in DEFAULTS:
-            if key in raw:
-                n = _num(raw[key])
-                if n is None:
-                    return None
-                part[key] = n
-        be = False
-        if allow_block and "block_enabled" in raw:
-            if not isinstance(raw["block_enabled"], bool):
-                return None
-            be = raw["block_enabled"]
-        return part, be
     except Exception:
+        warns.append("%s is not valid JSON" % label)
         return None
+    if not isinstance(raw, dict):
+        warns.append("%s is not a JSON object" % label)
+        return None
+    part = {}
+    for key in DEFAULTS:
+        if key in raw:
+            n = _num(raw[key])
+            if n is None:
+                warns.append("%s: '%s' must be a positive number (ignored)" % (label, key))
+            else:
+                part[key] = n
+    be = False
+    if "block_enabled" in raw:
+        if not allow_block:
+            warns.append("%s: block_enabled is ignored in a project file "
+                         "(set it in ~/.claude/ctxguard.json or CTXGUARD_BLOCK=1)" % label)
+        elif not isinstance(raw["block_enabled"], bool):
+            warns.append("%s: 'block_enabled' must be true or false (ignored)" % label)
+        else:
+            be = raw["block_enabled"]
+    return part, be
 
 
 def load_config(project_dir):
-    """Return (thresholds dict, block_enabled bool). An invalid layer is ignored."""
+    """Return (thresholds, block_enabled, warnings). Bad fields/layers are ignored, never fatal."""
     cfg = dict(DEFAULTS)
     block_enabled = False
+    warns = []
     layers = []
     try:
         home = os.path.expanduser("~")
@@ -127,7 +146,7 @@ def load_config(project_dir):
     if project_dir:
         layers.append((os.path.join(project_dir, CONFIG_REL), False))
     for path, allow_block in layers:
-        got = _read_layer(path, allow_block)
+        got = _read_layer(path, allow_block, warns)
         if got is None:
             continue
         new = dict(cfg)
@@ -136,19 +155,29 @@ def load_config(project_dir):
             cfg = new
             if allow_block:
                 block_enabled = got[1]
+        else:
+            warns.append("%s: thresholds out of range or order "
+                         "(need soft<strong<block, age_soft_h<age_strong_h, floors) - layer ignored"
+                         % ("~/.claude/ctxguard.json" if allow_block else ".claude/ctxguard.json"))
     new = dict(cfg)
     for key, name in ENV_NAMES.items():
+        if name not in os.environ:
+            continue
         try:
             n = _num(float(os.environ[name]))
         except Exception:
             n = None
-        if n is not None:
+        if n is None:
+            warns.append("%s is not a positive number (ignored)" % name)
+        else:
             new[key] = n
     if _ordered(new):
         cfg = new
+    elif new != cfg:
+        warns.append("CONTEXT_GUARD_* values out of range or order - ignored")
     if os.environ.get("CTXGUARD_BLOCK") == "1":
         block_enabled = True
-    return cfg, block_enabled
+    return cfg, block_enabled, warns
 
 
 _TS = re.compile(r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(?:\.\d+)?(Z|[+-]\d\d:?\d\d)?$")
@@ -261,7 +290,7 @@ def main():
         root = data.get("cwd")
     if not isinstance(root, str) or not root:
         root = os.getcwd()
-    cfg, block_enabled = load_config(root)
+    cfg, block_enabled, warns = load_config(root)
     try:
         ctx, first = measure(path)
     except Exception:
@@ -281,18 +310,23 @@ def main():
         last, mtime = read_state(state)
         if last is not None and ctx < last + POST_STEP and time.time() - mtime < POST_MIN_SECONDS:
             return 0
+    first_in_session = read_state(state)[0] is None
     try:
         with open(state, "w") as fh:
             fh.write(str(int(ctx)))
     except Exception:
         pass
+    note = ""
+    if warns and first_in_session:
+        note = " ctxguard config invalid: %s; using defaults for the rest." % "; ".join(warns[:3])
     k = int(ctx / 1000)
     if level == 3 and event == "UserPromptSubmit" and not override_active(root):
         print(json.dumps({"decision": "block", "reason": (
             "ctxguard: this session is about %dk tokens (limit %dk). Open a NEW session and continue "
             "from a short handoff summary. To continue here anyway, create the file "
             ".claude/ctxguard.override in the project (it expires after 12 hours)."
-            % (k, max(1, int(round(cfg["block"] / 1000.0)))))}))
+            % (k, max(1, int(round(cfg["block"] / 1000.0))))
+            + note)}))
         return 0
     base = ("CONTEXT GUARD: this session's context is about %dk tokens and it is %.1f h old. "
             "Every turn re-reads all of it, which is what drains usage limits." % (k, age_h))
@@ -303,6 +337,7 @@ def main():
     else:
         msg = base + (" SOFT RULE: finish the current step, keep it short, save any state or notes, "
                       "and propose a fresh session at the next natural break.")
+    msg += note
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": msg}}))
     return 0
 
